@@ -32,7 +32,7 @@ def MoveTowers (n, fr, to, spare):
         MoveTowers(1,fr,to,spare)
         MoveTowers(n-1, spare, to, fr)
 
-MoveTowers(10,1,3,2)
+MoveTowers(4,'A','B','C')
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     print_hi('PyCharm')
