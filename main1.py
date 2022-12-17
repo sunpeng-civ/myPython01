@@ -4,6 +4,7 @@ def fib(x):
     输入x：个数
     输出y：当前个数
     """
+    print("enter fib(",x,")")
     if (x==0) or (x==1):
         return 1
     else:
@@ -11,7 +12,8 @@ def fib(x):
 
 sum = 0
 
-for i in range(100):
+for i in range(12):
+    print (i,":",fib(i))
     sum += fib(i)
 
 print ('sum:', sum)
