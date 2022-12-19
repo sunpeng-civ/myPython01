@@ -13,14 +13,13 @@ def fib(x):
 
 
 def fib_effi(n, dd):
+    assert n >= 0
     if n in dd:
         return dd[n]
     else:
         ans = fib_effi(n - 1, dd) + fib_effi(n - 2, dd)
         dd[n] = ans
         return ans
-
-
 
 
 time1 = time.time()
@@ -36,7 +35,7 @@ print('计算时间:', (time2 - time1))
 time1 = time.time()
 
 sum = 0
-d = {0:1, 1: 1}
+d = {1: 1, 0: 1}
 for i in range(35):
     sum += fib_effi(i, d)
 time2 = time.time()
