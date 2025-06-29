@@ -57,7 +57,7 @@ FALLBACK_CHINESE_FONT = 'SimSun'
 # --- Qianwen Translation Function ---
 def translate_text_qianwen(text_to_translate: str, target_language: str = "Simplified Chinese") -> Union[str, None]:
     if not text_to_translate.strip(): return ""
-    prompt = f"You are an expert translator specializing in avionics and telecommunications. Translate the following English text into {target_language}. Your translation must be precise, formal, and maintain the technical accuracy and tone of the original source. Do not add any extra explanations or introductory phrases like 'Here is the translation:'. Just provide the translated text directly.\n\nEnglish text to translate:\n\"\"\"\n{text_to_translate}\n\"\"\""
+    prompt = f"你是一个擅长翻译航空电子、计算机、网络类英文文档的翻译员. Translate the following English text into {target_language}. Your translation must be precise, formal, and maintain the technical accuracy and tone of the original source. Do not add any extra explanations or introductory phrases like 'Here is the translation:'. Just provide the translated text directly.\n\nEnglish text to translate:\n\"\"\"\n{text_to_translate}\n\"\"\""
     try:
         if not dashscope.api_key or not dashscope.api_key.startswith("sk-"):
             print("Error: Qianwen API Key is invalid or not set for Dashscope.")
