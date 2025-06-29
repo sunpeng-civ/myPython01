@@ -7,7 +7,10 @@ import sys
 from copy import deepcopy
 from typing import Union 
 import subprocess
+
 import tempfile
+import concurrent.futures
+import nltk
 
 from docx import Document
 from docx.shared import Inches, Emu, Pt, RGBColor
@@ -54,7 +57,7 @@ FALLBACK_CHINESE_FONT = 'SimSun'
 # --- Qianwen Translation Function ---
 def translate_text_qianwen(text_to_translate: str, target_language: str = "Simplified Chinese") -> Union[str, None]:
     if not text_to_translate.strip(): return ""
-    prompt = f"我是一个航空电子专家。我让你翻译的内容，都是与航空、通信相关的。请参考这个背景，把这部分英文内容，准确、严谨的翻译为中文。 {target_language}. 必须保证文件原始的意思、口气、技术性. Output only the translated text itself without any introductory phrases like 'The translation is:'.\n\nEnglish text:\n\"\"\"\n{text_to_translate}\n\"\"\""
+    prompt = f"You are an expert translator specializing in avionics and telecommunications. Translate the following English text into {target_language}. Your translation must be precise, formal, and maintain the technical accuracy and tone of the original source. Do not add any extra explanations or introductory phrases like 'Here is the translation:'. Just provide the translated text directly.\n\nEnglish text to translate:\n\"\"\"\n{text_to_translate}\n\"\"\""
     try:
         if not dashscope.api_key or not dashscope.api_key.startswith("sk-"):
             print("Error: Qianwen API Key is invalid or not set for Dashscope.")
@@ -598,15 +601,12 @@ def create_interleaved_docx(output_file_path: str, processed_data: list, source_
                     if v_merge_val_from_parser is not None: 
                         if current_col_idx_for_vmerge_setting < num_cols :
                             cell_to_set_vmerge_on = new_table.cell(r_idx_vmerge, current_col_idx_for_vmerge_setting)
-                            tcPr = cell_to_set_vmerge_on._tc.get_or_add_tcPr()
-                            
-                            # Corrected vMerge handling:
-                            vmerge_child_element = tcPr.get_or_add_vMerge() 
-
+                            # Get or create the <w:vMerge> element. Its mere presence indicates a merge.
+                            vmerge_child_element = cell_to_set_vmerge_on._tc.get_or_add_tcPr().get_or_add_vMerge()
+                            # Only set the 'val' attribute if it's a 'restart'.
+                            # For 'continue', the attribute should be absent.
                             if v_merge_val_from_parser == 'restart':
-                                vmerge_child_element.val = 'restart' 
-                            elif v_merge_val_from_parser == 'continue':
-                                vmerge_child_element.val = 'continue'
+                                vmerge_child_element.val = 'restart'
                                  
                     current_col_idx_for_vmerge_setting += source_cell_d_vmerge.get('grid_span', 1)
 
@@ -625,55 +625,50 @@ def translate_document_main_flow(input_docx_path: str, output_docx_path: str):
     parsed_structure = parse_docx_for_translation(source_doc_obj)
     if not parsed_structure: print("解析文档结构失败或文档为空。"); return False
 
-    print(f"成功解析 {len(parsed_structure)} 个顶层元素。开始翻译文本内容...")
-    total_translation_units = 0
+    print(f"成功解析 {len(parsed_structure)} 个顶层元素。开始收集待翻译内容...")
+
+    # 1. 收集所有待翻译的任务
+    # 每个任务是一个字典，包含待翻译文本和结果应存回的目标字典的引用。
+    tasks_to_translate = []
     for item in parsed_structure:
         if item['type'] == 'paragraph' and item.get('text_to_translate', '').strip():
-            total_translation_units += 1
+            tasks_to_translate.append({'text': item['text_to_translate'], 'target': item})
         elif item['type'] == 'table':
             for row in item['rows']:
                 for cell in row['cells']:
-                    if cell.get('full_cell_text_to_translate', '').strip(): total_translation_units += 1
+                    if cell.get('full_cell_text_to_translate', '').strip():
+                        tasks_to_translate.append({'text': cell['full_cell_text_to_translate'], 'target': cell})
 
-    if total_translation_units == 0:
+    if not tasks_to_translate:
         print("未找到需要翻译的文本内容。如果文档中确实有文本，请检查解析逻辑。")
         create_interleaved_docx(output_docx_path, parsed_structure, source_doc_obj)
         return True
 
-    with tqdm(total=total_translation_units, desc="翻译进度", unit="单元") as pbar:
-        for data_item in parsed_structure:
-            if data_item['type'] == 'paragraph':
-                if data_item.get('text_to_translate', '').strip():
-                    text_to_translate = data_item['text_to_translate']
-                    chunks = split_text_into_chunks(text_to_translate, MAX_CHARS_PER_TRANSLATE_CHUNK)
-                    translated_chunks = []
-                    for chunk_idx, chunk in enumerate(chunks):
-                        translated_chunk = translate_text_qianwen(chunk)
-                        if translated_chunk and not translated_chunk.startswith("[Translation"):
-                            translated_chunks.append(translated_chunk)
-                        else:
-                            print(f"警告: 段落中一块文本翻译失败或返回空: '{chunk[:50]}...'。错误信息: {translated_chunk}")
-                            translated_chunks.append(f"[翻译失败: {chunk[:30]}...]") 
-                    final_translation = " ".join(filter(None, translated_chunks)).strip()
-                    data_item['translation'] = final_translation
-                    pbar.update(1)
-            elif data_item['type'] == 'table':
-                for row_data in data_item['rows']:
-                    for cell_data in row_data['cells']:
-                        if cell_data.get('full_cell_text_to_translate', '').strip():
-                            cell_text = cell_data['full_cell_text_to_translate']
-                            chunks = split_text_into_chunks(cell_text, MAX_CHARS_PER_TRANSLATE_CHUNK)
-                            translated_chunks = []
-                            for chunk_idx, chunk in enumerate(chunks):
-                                translated_chunk = translate_text_qianwen(chunk)
-                                if translated_chunk and not translated_chunk.startswith("[Translation"):
-                                    translated_chunks.append(translated_chunk)
-                                else:
-                                    print(f"警告: 表格单元格中一块文本翻译失败或返回空: '{chunk[:50]}...'。错误信息: {translated_chunk}")
-                                    translated_chunks.append(f"[翻译失败: {chunk[:30]}...]")
-                            final_translation = " ".join(filter(None, translated_chunks)).strip()
-                            cell_data['translation'] = final_translation
-                            pbar.update(1)
+    # 2. 定义一个辅助函数来处理单个文本块的翻译（包括分片）
+    def process_and_translate_block(text_block: str) -> str:
+        chunks = split_text_into_chunks(text_block, MAX_CHARS_PER_TRANSLATE_CHUNK)
+        translated_chunks = []
+        for chunk in chunks:
+            translated_chunk = translate_text_qianwen(chunk)
+            if translated_chunk and not translated_chunk.startswith("[Translation"):
+                translated_chunks.append(translated_chunk)
+            else:
+                print(f"警告: 一块文本翻译失败或返回空: '{chunk[:50]}...'。错误信息: {translated_chunk}")
+                translated_chunks.append(f"[翻译失败: {chunk[:30]}...]")
+        return " ".join(filter(None, translated_chunks)).strip()
+
+    # 3. 使用线程池并发执行翻译
+    # max_workers可以根据您的API速率限制和网络状况调整，10是一个不错的起点。
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        texts_for_api = [task['text'] for task in tasks_to_translate]
+        
+        # executor.map会按顺序返回结果，非常适合与tqdm结合使用来显示进度
+        results_iterator = executor.map(process_and_translate_block, texts_for_api)
+        translated_texts = list(tqdm(results_iterator, total=len(tasks_to_translate), desc="翻译进度", unit="单元"))
+
+    # 4. 将翻译结果写回数据结构
+    for i, task in enumerate(tasks_to_translate):
+        task['target']['translation'] = translated_texts[i]
 
     print("文本翻译阶段完成。")
     create_interleaved_docx(output_docx_path, parsed_structure, source_doc_obj)
