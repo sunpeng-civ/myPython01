@@ -55,23 +55,47 @@ FALLBACK_CHINESE_FONT = 'SimSun'
 
 
 # --- Qianwen Translation Function ---
-def translate_text_qianwen(text_to_translate: str, target_language: str = "Simplified Chinese") -> Union[str, None]:
+def translate_text_qianwen(text_to_translate: str, target_language: str = "Simplified Chinese", max_retries: int = 5) -> Union[str, None]:    
     if not text_to_translate.strip(): return ""
     prompt = f"你是一个擅长翻译航空电子、计算机、网络类英文文档的翻译员. Translate the following English text into {target_language}. Your translation must be precise, formal, and maintain the technical accuracy and tone of the original source. Do not add any extra explanations or introductory phrases like 'Here is the translation:'. Just provide the translated text directly.\n\nEnglish text to translate:\n\"\"\"\n{text_to_translate}\n\"\"\""
-    try:
-        if not dashscope.api_key or not dashscope.api_key.startswith("sk-"):
-            print("Error: Qianwen API Key is invalid or not set for Dashscope.")
-            return f"[Translation API Key Error]"
-        response = dashscope.Generation.call(model=QIANWEN_MODEL, prompt=prompt)
-        if response.status_code == HTTPStatus.OK:
-            return response.output.text.strip() if response.output and response.output.text else f"[Translation Error: Empty Response]"
-        else:
-            print(
-                f"Error calling Qianwen API: HTTP Status {response.status_code}, Code: {response.code}, Message: {response.message}")
-            return f"[Translation API Error: {response.message}]"
-    except Exception as e:
-        print(f"Exception during Qianwen API call: {e}")
-        return f"[Translation Exception: {e}]"
+
+    if not dashscope.api_key or not dashscope.api_key.startswith("sk-"):
+        print("Error: Qianwen API Key is invalid or not set for Dashscope.")
+        return f"[Translation API Key Error]"
+
+    for attempt in range(max_retries):
+        try:
+            response = dashscope.Generation.call(model=QIANWEN_MODEL, prompt=prompt)
+
+            if response.status_code == HTTPStatus.OK:
+                return response.output.text.strip() if response.output and response.output.text else f"[Translation Error: Empty Response]"
+
+            # Specific handling for retryable errors like rate limiting and timeouts
+            is_rate_limit = response.status_code == HTTPStatus.TOO_MANY_REQUESTS  # 429
+            is_timeout = hasattr(response, 'code') and response.code == 'RequestTimeOut'
+
+            if (is_rate_limit or is_timeout) and attempt < max_retries - 1:
+                backoff_time = 2 ** (attempt + 1)  # Exponential backoff: 2, 4, 8, 16 seconds
+                print(
+                    f"API Error: Status {response.status_code}, Code: {getattr(response, 'code', 'N/A')}. Retrying in {backoff_time}s... (Attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(backoff_time)
+                continue
+            else:
+                # Non-retryable error or max retries reached
+                print(
+                    f"Error calling Qianwen API: HTTP Status {response.status_code}, Code: {getattr(response, 'code', 'N/A')}, Message: {response.message}")
+                return f"[Translation API Error: {response.message}]"
+
+        except Exception as e:
+            print(f"Exception during Qianwen API call on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                backoff_time = 2 ** (attempt + 1)
+                print(f"Retrying in {backoff_time}s...")
+                time.sleep(backoff_time)
+            else:
+                return f"[Translation Exception: {e}]"
+    return "[Translation Failed after multiple retries]"
 
 
 # --- Text Chunking Function ---
@@ -658,8 +682,8 @@ def translate_document_main_flow(input_docx_path: str, output_docx_path: str):
         return " ".join(filter(None, translated_chunks)).strip()
 
     # 3. 使用线程池并发执行翻译
-    # max_workers可以根据您的API速率限制和网络状况调整，10是一个不错的起点。
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # max_workers可以根据您的API速率限制和网络状况调整，5是一个不错的起点。
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         texts_for_api = [task['text'] for task in tasks_to_translate]
         
         # executor.map会按顺序返回结果，非常适合与tqdm结合使用来显示进度
